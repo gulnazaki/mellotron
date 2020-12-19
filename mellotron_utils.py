@@ -1,6 +1,5 @@
 import re
 import numpy as np
-import music21 as m21
 import torch
 import torch.nn.functional as F
 from text import text_to_sequence, get_arpabet, cmudict
@@ -238,6 +237,7 @@ def adjust_event(event, hop_length=256, sampling_rate=22050):
 
 
 def musicxml2score(filepath, bpm=60):
+    import music21 as m21
     track = {}
     beat_length_seconds = 60/bpm
     data = m21.converter.parse(filepath)
@@ -478,6 +478,73 @@ def get_data_from_musicxml(filepath, bpm, phoneme_durations=None,
                    'text_encoded': text_encoded}
 
     return data
+
+
+def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120, resolution=220, phoneme_durations=None, convert_stress=False):
+    def pitch_to_freq(pitch):
+        return 440*(2**((pitch - 69)/12))
+
+    if ticks:
+        if midipath:
+            from pretty_midi import PrettyMIDI
+            midi = PrettyMIDI(midipath)
+            to_time = midi.tick_to_time
+        else:
+            to_time = lambda t: t * 60/(tempo*resolution)
+    else:
+        to_time = lambda t: t
+
+    if phoneme_durations is None:
+        phoneme_durations = PHONEMEDURATION
+    events = []
+    time = 0
+    notes_off = True
+    start_of_word = True
+    rest_start = -1
+    for e in text_events:
+        e_split = e.split('_')
+        if '_' not in e:
+            lyric = (e.title().rstrip()) if start_of_word else (e.lower().rstrip())
+            start_of_word = True if e[-1] == ' ' else False
+        elif e_split[0] == 'ON':
+            if rest_start >= 0:
+                events.append([' ', 0, to_time(rest_start), to_time(time)])
+                rest_start = -1
+            freq = pitch_to_freq(int(e_split[1]))
+            start = time
+            notes_off = False
+        elif e_split[0] == 'W':
+            t = int(e_split[1])
+            if notes_off and rest_start < 0:
+                rest_start = time
+            time += t
+        elif e_split[0] == 'OFF':
+            events.append([lyric, freq, to_time(start), to_time(time)])
+            notes_off = True
+
+    events = track2events(events)
+    events = adjust_words(events)
+    events_arpabet = [events2eventsarpabet(e) for e in events]
+
+    # make adjustments
+    events_arpabet = [adjust_extensions(e, phoneme_durations)
+                      for e in events_arpabet]
+    events_arpabet = [adjust_consonants(e, phoneme_durations)
+                      for e in events_arpabet]
+    events_arpabet = add_space_between_events(events_arpabet)
+
+    # convert data to alignment, f0 and text encoded
+    alignment = event2alignment(events_arpabet)
+    f0s = event2f0(events_arpabet)
+    alignment, f0s = remove_excess_frames(alignment, f0s)
+    text_encoded, text_clean = event2text(events_arpabet, convert_stress)
+
+    # convert data to torch
+    alignment = torch.from_numpy(alignment).permute(1, 0)[:, None].float()
+    f0s = torch.from_numpy(f0s)[None].float()
+    text_encoded = torch.LongTensor(text_encoded)[None]
+
+    return {'rhythm': alignment, 'pitch_contour': f0s, 'text_encoded': text_encoded}
 
 
 if __name__ == "__main__":
