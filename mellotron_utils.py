@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from text import text_to_sequence, get_arpabet, cmudict
+from string import capwords
 
 
 CMUDICT_PATH = "data/cmu_dictionary"
@@ -10,54 +11,54 @@ CMUDICT = cmudict.CMUDict(CMUDICT_PATH)
 PHONEME2GRAPHEME = {
     'AA': ['a', 'o', 'ah'],
     'AE': ['a', 'e'],
-    'AH': ['u', 'e', 'a', 'h', 'o'],
-    'AO': ['o', 'u', 'au'],
+    'AH': ['u', 'e', 'a', 'h', 'o', 'ou'],
+    'AO': ['o', 'u', 'au', 'a'],
     'AW': ['ou', 'ow'],
     'AX': ['a'],
     'AXR': ['er'],
     'AY': ['i'],
-    'EH': ['e', 'ae'],
+    'EH': ['e', 'ae', 'ea'],
     'EY': ['a', 'ai', 'ei', 'e', 'y'],
-    'IH': ['i', 'e', 'y'],
+    'IH': ['i', 'e', 'y', 'ea'],
     'IX': ['e', 'i'],
-    'IY': ['ea', 'ey', 'y', 'i'],
-    'OW': ['oa', 'o'],
+    'IY': ['ea', 'ey', 'y', 'i', 'e', 'ie'],
+    'OW': ['oa', 'o', 'oh'],
     'OY': ['oy'],
-    'UH': ['oo'],
-    'UW': ['oo', 'u', 'o'],
+    'UH': ['oo', 'u'],
+    'UW': ['oo', 'u', 'o', 'ou', 'ew'],
     'UX': ['u'],
     'B': ['b'],
-    'CH': ['ch', 'tch'],
-    'D': ['d', 'e', 'de'],
+    'CH': ['ch', 'tch', 't'],
+    'D': ['d', 'e', 'de', 'ed'],
     'DH': ['th'],
     'DX': ['tt'],
     'EL': ['le'],
     'EM': ['m'],
     'EN': ['on'],
-    'ER': ['i', 'er'],
-    'F': ['f'],
+    'ER': ['i', 'ir', 'er', 'r', 'ere', 'ar'],
+    'F': ['f', 'fe'],
     'G': ['g'],
     'HH': ['h'],
     'JH': ['j'],
-    'K': ['k', 'c', 'ch'],
+    'K': ['k', 'c', 'ck', 'ke'],
     'KS': ['x'],
     'L': ['ll', 'l'],
-    'M': ['m'],
-    'N': ['n', 'gn'],
-    'NG': ['ng'],
+    'M': ['m', 'me'],
+    'N': ['n', 'gn', 'ne', 'kn'],
+    'NG': ['ng', 'n'],
     'NX': ['nn'],
     'P': ['p'],
     'Q': ['-'],
-    'R': ['wr', 'r'],
-    'S': ['s', 'ce'],
+    'R': ['wr', 'r', 're', 'er'],
+    'S': ['s', 'c', 'ce'],
     'SH': ['sh'],
-    'T': ['t'],
+    'T': ['t', 'ght', 'ed'],
     'TH': ['th'],
-    'V': ['v', 'f', 'e'],
-    'W': ['w'],
+    'V': ['v', 'f', 'e', 've'],
+    'W': ['w', 'wh'],
     'WH': ['wh'],
     'Y': ['y', 'j'],
-    'Z': ['z', 's'],
+    'Z': ['z', 's', 'se'],
     'ZH': ['s']
 }
 
@@ -304,79 +305,71 @@ def events2eventsarpabet(event):
         return event
 
     # get word and word arpabet
-    word = ''.join([e[0] for e in event if e[0] not in('_', ' ')])
+    letters = [e[0] for e in event]
+    word = ''.join([l for l in letters if l not in('_', ' ')])
     word_arpabet = get_arpabet(word, CMUDICT)
+
     if word_arpabet[0] != '{':
-        return event
+        print("{} NOT IN CMUDICT\n".format(word))
+        return []
 
-    word_arpabet = word_arpabet.split()
+    phonemes = word_arpabet.split()
 
-    # align tokens to arpabet
-    i, k = 0, 0
-    new_events = []
-    while i < len(event) and k < len(word_arpabet):
-        # single token
-        token_a, freq_a, start_time_a, end_time_a = event[i]
+    ip = 0
+    ig = 0
+    phoneme_events = []
+    backtrack = []
+    backtracking = False
+    match = False
+    spaces = 0
+    while True:
+        if ip == len(phonemes) and ig == len(letters):
+            match = True
+            break
+        elif ig >= len(letters):
+            if backtrack:
+                ip, ig, spaces, valid_graphemes = backtrack.pop()
+                phoneme_events = phoneme_events[:ip + spaces]
+                backtracking = True
+            else:
+                break
 
-        if token_a == ' ':
-            new_events.append([token_a, freq_a, start_time_a, end_time_a])
-            i += 1
+        if letters[ig] == ' ':
+            phoneme_events.append([' ', event[ig][1], event[ig][2], event[ig][3]])
+            ig += 1
+            spaces += 1
             continue
 
-        if token_a == '_':
-            new_events.append([token_a, freq_a, start_time_a, end_time_a])
-            i += 1
+        if letters[ig] == "'":
+            ig += 1
             continue
 
-        # two tokens
-        if i < len(event) - 1:
-            j = i + 1
-            token_b, freq_b, start_time_b, end_time_b = event[j]
-            between_events = []
-            while j < len(event) and event[j][0] == '_':
-                between_events.append([token_b, freq_b, start_time_b, end_time_b])
-                j += 1
-                if j < len(event):
-                    token_b, freq_b, start_time_b, end_time_b = event[j]
+        if not backtracking:
+            if ip < len(phonemes):
+                possible_graphemes = PHONEME2GRAPHEME[re.sub('[0-9{}]', '', phonemes[ip])]
+                valid_graphemes = [g for g in possible_graphemes if g == ''.join(letters[ig : ig + len(g)]).lower()]
+            else:
+                valid_graphemes = []
 
-            token_compound_2 = (token_a + token_b).lower()
-
-        # single arpabet
-        arpabet = re.sub('[0-9{}]', '', word_arpabet[k])
-
-        if k < len(word_arpabet) - 1:
-            arpabet_compound_2 = ''.join(word_arpabet[k:k+2])
-            arpabet_compound_2 = re.sub('[0-9{}]', '', arpabet_compound_2)
-
-        if i < len(event) - 1 and token_compound_2 in PHONEME2GRAPHEME[arpabet]:
-            new_events.append([word_arpabet[k], freq_a, start_time_a, end_time_a])
-            if len(between_events):
-                new_events.extend(between_events)
-            if start_time_a != start_time_b:
-                new_events.append([word_arpabet[k], freq_b, start_time_b, end_time_b])
-            i += 2 + len(between_events)
-            k += 1
-        elif token_a.lower() in PHONEME2GRAPHEME[arpabet]:
-            new_events.append([word_arpabet[k], freq_a, start_time_a, end_time_a])
-            i += 1
-            k += 1
-        elif arpabet_compound_2 in PHONEME2GRAPHEME and token_a.lower() in PHONEME2GRAPHEME[arpabet_compound_2]:
-            new_events.append([word_arpabet[k], freq_a, start_time_a, end_time_a])
-            new_events.append([word_arpabet[k+1], freq_a, start_time_a, end_time_a])
-            i += 1
-            k += 2
+        if not valid_graphemes:
+            if backtrack:
+                ip, ig, spaces, valid_graphemes = backtrack.pop()
+                phoneme_events = phoneme_events[:ip + spaces]
+                backtracking = True
+            else:
+                break
         else:
-            k += 1
+            backtracking = False
+            if len(valid_graphemes) > 1:
+                backtrack.append((ip, ig, spaces, valid_graphemes[1:]))
+            phoneme_events.append([phonemes[ip], event[ig][1], event[ig][2], event[ig][3]])
+            ip += 1
+            ig += len(valid_graphemes[0])
 
-    # add extensions and pauses at end of words
-    while i < len(event):
-        token_a, freq_a, start_time_a, end_time_a = event[i]
-
-        if token_a in (' ', '_'):
-            new_events.append([token_a, freq_a, start_time_a, end_time_a])
-        i += 1
-
-    return new_events
+    if not match:
+        print("NO PHONEME-GRAPHEME MATCH", word, word_arpabet, "\n", " ".join(p[0] for p in phoneme_events), "\n")
+        return []
+    return phoneme_events
 
 
 def event2alignment(events, hop_length=256, sampling_rate=22050):
@@ -410,7 +403,7 @@ def event2f0(events, hop_length=256, sampling_rate=22050):
     return f0s
 
 
-def event2text(events, convert_stress, cmudict=None):
+def event2text(events, convert_stress):
     text_clean = ''
     for event in events:
         for i in range(len(event)):
@@ -430,7 +423,7 @@ def event2text(events, convert_stress, cmudict=None):
     if convert_stress:
         text_clean = re.sub('[0-9]', '1', text_clean)
 
-    text_encoded = text_to_sequence(text_clean, [], cmudict)
+    text_encoded = text_to_sequence(text_clean, [], CMUDICT)
     return text_encoded, text_clean
 
 
@@ -504,7 +497,7 @@ def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120,
     for e in text_events:
         e_split = e.split('_')
         if '_' not in e:
-            lyric = (e.title().rstrip()) if start_of_word else (e.lower().rstrip())
+            lyric = (capwords(e)) if start_of_word else (e.lower().rstrip())
             start_of_word = True if e[-1] == ' ' else False
         elif e_split[0] == 'ON':
             if rest_start >= 0:
@@ -525,6 +518,7 @@ def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120,
     events = track2events(events)
     events = adjust_words(events)
     events_arpabet = [events2eventsarpabet(e) for e in events]
+    events_arpabet = [e for e in events_arpabet if e]
 
     # make adjustments
     events_arpabet = [adjust_extensions(e, phoneme_durations)
