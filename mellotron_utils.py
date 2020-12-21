@@ -21,7 +21,7 @@ PHONEME2GRAPHEME = {
     'EY': ['a', 'ai', 'ei', 'e', 'y'],
     'IH': ['i', 'e', 'y', 'ea', 'ui'],
     'IX': ['e', 'i'],
-    'IY': ['ea', 'ey', 'y', 'i', 'e', 'ie'],
+    'IY': ['ea', 'ey', 'y', 'i', 'e', 'ie', 'ee'],
     'OW': ['oa', 'o', 'oh'],
     'OY': ['oy'],
     'UH': ['oo', 'u', 'ou'],
@@ -271,7 +271,7 @@ def events2eventsarpabet(event):
 
     if word_arpabet[0] != '{':
         print("{} NOT IN CMUDICT\n".format(word))
-        return []
+        return [[' ', 0, event[0][2], event[-1]][3]]
 
     phonemes = word_arpabet.split()
 
@@ -328,7 +328,7 @@ def events2eventsarpabet(event):
 
     if not match:
         print("NO PHONEME-GRAPHEME MATCH", word, word_arpabet, "\n", " ".join(p[0] for p in phoneme_events), "\n")
-        return []
+        return [[' ', 0, event[0][2], event[-1]][3]]
     return phoneme_events
 
 
@@ -453,7 +453,6 @@ def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120,
     events = track2events(events)
     events = adjust_words(events)
     events_arpabet = [events2eventsarpabet(e) for e in events]
-    events_arpabet = [e for e in events_arpabet if e]
 
     # make adjustments
     events_arpabet = [adjust_extensions(e, phoneme_durations)
