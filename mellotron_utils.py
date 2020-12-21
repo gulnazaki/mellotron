@@ -177,35 +177,40 @@ def adjust_extensions(events, phoneme_durations):
     return new_events
 
 
-def adjust_consonant_lengths(events, phoneme_durations):
+def adjust_phoneme_lengths(events, phoneme_durations):
     t_init = events[0][2]
-
-    idx_last_vowel = None
-    for i in range(len(events)):
-        task = re.sub('[0-9{}]', '', events[i][0])
-        if task in phoneme_durations:
-            duration = phoneme_durations[task]
-            if idx_last_vowel is None:  # consonant comes before any vowel
-                events[i][2] = t_init
-                events[i][3] = t_init + duration
-            else:  # consonant comes after a vowel, must offset
-                events[idx_last_vowel][3] -= duration
-                for k in range(idx_last_vowel+1, i):
-                    events[k][2] -= duration
-                    events[k][3] -= duration
-                events[i][2] = events[i-1][3]
-                events[i][3] = events[i-1][3] + duration
+    t_end = events[0][3]
+    consonant_lengths = {}
+    vowel_lengths = {}
+    for event in events:
+        c = re.sub('[0-9{}]', '', event[0])
+        if c in phoneme_durations:
+            consonant_lengths[event[0]] = phoneme_durations[c]
         else:
-            events[i][2] = t_init
-            events[i][3] = events[i][3]
-            t_init = events[i][3]
-            idx_last_vowel = i
-        t_init = events[i][3]
+            vowel_lengths[event[0]] = 0
+
+    vowel_duration = (t_end - t_init - sum(consonant_lengths.values())) / len(vowel_lengths)
+    vowel_lengths = {k : vowel_duration for k in vowel_lengths}
+
+    time = t_init
+    for i in range(len(events)):
+        phoneme = events[i][0]
+        if phoneme in vowel_lengths:
+            phoneme_lengths = vowel_lengths
+        else:
+            phoneme_lengths = consonant_lengths
+        
+        events[i][2] = time
+        if i < len(events) - 1:
+            time += phoneme_lengths[phoneme]
+            events[i][3] = time
+        else:
+            events[i][3] = t_end
 
     return events
 
 
-def adjust_consonants(events, phoneme_durations):
+def adjust_phonemes(events, phoneme_durations):
     if len(events) == 1:
         return events
 
@@ -222,7 +227,7 @@ def adjust_consonants(events, phoneme_durations):
     split_ids.append((start, len(events)))
 
     for (start, end) in split_ids:
-        events[start:end] = adjust_consonant_lengths(
+        events[start:end] = adjust_phoneme_lengths(
             events[start:end], phoneme_durations)
 
     return events
@@ -235,51 +240,6 @@ def adjust_event(event, hop_length=256, sampling_rate=22050):
         return [event] if freq == 0 else [['_', freq, start_time, end_time]]
 
     return [[token, freq, start_time, end_time] for token in tokens]
-
-
-def musicxml2score(filepath, bpm=60):
-    import music21 as m21
-    track = {}
-    beat_length_seconds = 60/bpm
-    data = m21.converter.parse(filepath)
-    for i in range(len(data.parts)):
-        part = data.parts[i].flat
-        events = []
-        for k in range(len(part.notesAndRests)):
-            event = part.notesAndRests[k]
-            if isinstance(event, m21.note.Note):
-                freq = event.pitch.frequency
-                token = event.lyrics[0].text if len(event.lyrics) > 0 else ' '
-                start_time = event.offset * beat_length_seconds
-                end_time = start_time + event.duration.quarterLength * beat_length_seconds
-                event = [token, freq, start_time, end_time]
-            elif isinstance(event, m21.note.Rest):
-                freq = 0
-                token = ' '
-                start_time = event.offset * beat_length_seconds
-                end_time = start_time + event.duration.quarterLength * beat_length_seconds
-                event = [token, freq, start_time, end_time]
-
-            if token == '_':
-                raise Exception("Unexpected token {}".format(token))
-
-            if len(events) == 0:
-                events.append(event)
-            else:
-                if token == ' ':
-                    if freq == 0:
-                        if events[-1][1] == 0:
-                            events[-1][3] = end_time
-                        else:
-                            events.append(event)
-                    elif freq == events[-1][1]:  # is event duration extension ?
-                        events[-1][-1] = end_time
-                    else:  # must be different note on same syllable
-                        events.append(event)
-                else:
-                    events.append(event)
-        track[part.partName] = events
-    return track
 
 
 def track2events(track):
@@ -434,43 +394,17 @@ def remove_excess_frames(alignment, f0s):
     return alignment, f0s
 
 
-def get_data_from_musicxml(filepath, bpm, phoneme_durations=None,
-                           convert_stress=False):
-    if phoneme_durations is None:
-        phoneme_durations = PHONEMEDURATION
-    score = musicxml2score(filepath, bpm)
-    data = {}
-    for k, v in score.items():
-        # ignore empty tracks
-        if len(v) == 1 and v[0][0] == ' ':
-            continue
-
-        events = track2events(v)
-        events = adjust_words(events)
-        events_arpabet = [events2eventsarpabet(e) for e in events]
-
-        # make adjustments
-        events_arpabet = [adjust_extensions(e, phoneme_durations)
-                          for e in events_arpabet]
-        events_arpabet = [adjust_consonants(e, phoneme_durations)
-                          for e in events_arpabet]
-        events_arpabet = add_space_between_events(events_arpabet)
-
-        # convert data to alignment, f0 and text encoded
-        alignment = event2alignment(events_arpabet)
-        f0s = event2f0(events_arpabet)
-        alignment, f0s = remove_excess_frames(alignment, f0s)
-        text_encoded, text_clean = event2text(events_arpabet, convert_stress)
-
-        # convert data to torch
-        alignment = torch.from_numpy(alignment).permute(1, 0)[:, None].float()
-        f0s = torch.from_numpy(f0s)[None].float()
-        text_encoded = torch.LongTensor(text_encoded)[None]
-        data[k] = {'rhythm': alignment,
-                   'pitch_contour': f0s,
-                   'text_encoded': text_encoded}
-
-    return data
+def split_multiword(events):
+    new_events = []
+    for event in events:
+        words = event[0].split()
+        if len(words) <= 1:
+            new_events.append(event)
+        else:
+            durations = (event[3] - event[2]) / len(words)
+            for i, word in enumerate(words):
+                new_events.append([word, event[1], event[2] + i * durations, event[2] + (i + 1) * durations])
+    return new_events
 
 
 def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120, resolution=220, phoneme_durations=None, convert_stress=False):
@@ -515,6 +449,7 @@ def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120,
             events.append([lyric, freq, to_time(start), to_time(time)])
             notes_off = True
 
+    events = split_multiword(events)
     events = track2events(events)
     events = adjust_words(events)
     events_arpabet = [events2eventsarpabet(e) for e in events]
@@ -523,7 +458,7 @@ def get_data_from_text_events(text_events, ticks=True, midipath=None, tempo=120,
     # make adjustments
     events_arpabet = [adjust_extensions(e, phoneme_durations)
                       for e in events_arpabet]
-    events_arpabet = [adjust_consonants(e, phoneme_durations)
+    events_arpabet = [adjust_phonemes(e, phoneme_durations)
                       for e in events_arpabet]
     events_arpabet = add_space_between_events(events_arpabet)
 
